@@ -523,10 +523,12 @@ async def _test_batch(
             _run_single_with_deadline(
                 original_line=line,
                 settings=settings,
-                port=settings.port_start + index,
+                # Reuse the same port window for every batch.
+                # Batches run sequentially, so slot-based ports do not collide across batches.
+                port=settings.port_start + slot,
             )
         )
-        for index, line in lines
+        for slot, (_, line) in enumerate(lines)
     ]
     batch_timeout = (
         settings.batch_timeout_seconds
@@ -578,6 +580,17 @@ async def test_configs(config_lines: list[str], settings: TesterSettings) -> lis
     working_lines: list[str] = []
 
     batch_size = max(1, settings.batch_size)
+    max_batch_port = settings.port_start + batch_size - 1
+    if settings.port_start <= 0 or max_batch_port > 65535:
+        LOGGER.error(
+            "Invalid port window for batch testing: start=%d batch_size=%d max=%d",
+            settings.port_start,
+            batch_size,
+            max_batch_port,
+        )
+        _atomic_write_lines(settings.working_output_path, [])
+        return []
+
     total_batches = (len(indexed) + batch_size - 1) // batch_size
     for batch_number, start in enumerate(range(0, len(indexed), batch_size), start=1):
         batch = indexed[start : start + batch_size]
