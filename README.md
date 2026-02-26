@@ -67,7 +67,12 @@ TEST_MAX_CONFIGS_PER_CYCLE=500
 ```
 
 ## GitHub Auto Push
-After a successful cycle, the service can push only these generated files:
+After a successful cycle, the service:
+1. pulls latest remote changes with `git pull --rebase --autostash`
+2. commits only generated outputs
+3. pushes to configured branch (with one auto-retry if rejected due to upstream updates)
+
+It pushes only these generated files:
 - `collection-of-collector.txt`
 - `collection-of-collectors-working.txt`
 

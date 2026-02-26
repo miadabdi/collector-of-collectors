@@ -100,6 +100,28 @@ def _compact_error(command: _GitCommandResult) -> str:
     return "unknown git error"
 
 
+def _looks_like_non_fast_forward(command: _GitCommandResult) -> bool:
+    merged = f"{command.stdout}\n{command.stderr}".lower()
+    markers = (
+        "non-fast-forward",
+        "fetch first",
+        "failed to push some refs",
+        "updates were rejected",
+    )
+    return any(marker in merged for marker in markers)
+
+
+async def _pull_latest(settings: GitPushSettings) -> _GitCommandResult:
+    return await _run_git(
+        settings,
+        "pull",
+        "--rebase",
+        "--autostash",
+        settings.remote,
+        settings.branch,
+    )
+
+
 async def push_generated_files(settings: GitPushSettings, reason: str) -> PushResult:
     if not settings.enabled:
         return PushResult(
@@ -141,6 +163,16 @@ async def push_generated_files(settings: GitPushSettings, reason: str) -> PushRe
                 f"git remote '{settings.remote}' not configured: "
                 f"{_compact_error(remote_check)}"
             ),
+        )
+
+    pull_result = await _pull_latest(settings)
+    if pull_result.returncode != 0:
+        return PushResult(
+            attempted=True,
+            committed=False,
+            pushed=False,
+            commit_sha=None,
+            message=f"git pull failed: {_compact_error(pull_result)}",
         )
 
     status_result = await _run_git(settings, "status", "--porcelain", "--", *path_args)
@@ -207,6 +239,40 @@ async def push_generated_files(settings: GitPushSettings, reason: str) -> PushRe
 
     push_result = await _run_git(settings, "push", settings.remote, f"HEAD:{settings.branch}")
     if push_result.returncode != 0:
+        if _looks_like_non_fast_forward(push_result):
+            retry_pull = await _pull_latest(settings)
+            if retry_pull.returncode != 0:
+                return PushResult(
+                    attempted=True,
+                    committed=True,
+                    pushed=False,
+                    commit_sha=commit_sha,
+                    message=(
+                        "git push rejected and retry pull failed: "
+                        f"{_compact_error(retry_pull)}"
+                    ),
+                )
+
+            retry_push = await _run_git(settings, "push", settings.remote, f"HEAD:{settings.branch}")
+            if retry_push.returncode == 0:
+                return PushResult(
+                    attempted=True,
+                    committed=True,
+                    pushed=True,
+                    commit_sha=commit_sha,
+                    message=(
+                        f"pushed generated files after retry for cycle '{reason}' "
+                        f"to {settings.remote}/{settings.branch}"
+                    ),
+                )
+            return PushResult(
+                attempted=True,
+                committed=True,
+                pushed=False,
+                commit_sha=commit_sha,
+                message=f"git push failed after retry: {_compact_error(retry_push)}",
+            )
+
         return PushResult(
             attempted=True,
             committed=True,
